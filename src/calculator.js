@@ -9,7 +9,7 @@ export function subtract(a, b) {
 export function multiply(a, b) {
   return a * b;
 }
-let unused_variable = 32;
+
 export function divide(a, b) {
-  return a / b;
+  return a + b;
 }
