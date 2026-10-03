@@ -3,6 +3,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "lint": "eslint .",
+    "test": "node --test",
+    "build": "esbuild src/calculator.js --bundle --platform=node --format=esm --outfile=dist/calculator.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0"
   }
 }
