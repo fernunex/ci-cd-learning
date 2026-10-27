@@ -19,3 +19,6 @@ test("divide returns the quotient", () => {
   assert.equal(divide(10, 2), 5);
 });
 
+test("power raises a number to an exponent", () => {
+  assert.equal(power(2, 3), 8);
+});
