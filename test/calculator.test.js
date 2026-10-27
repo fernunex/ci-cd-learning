@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { add, subtract, multiply, divide} from "../src/calculator.js";
+import { add, subtract, multiply, divide, power} from "../src/calculator.js";
 
 test("add returns the sum of two numbers", () => {
   assert.equal(add(2, 3), 5);
@@ -17,4 +17,8 @@ test("multiply returns the product of two numbers", () => {
 
 test("divide returns the quotient", () => {
   assert.equal(divide(10, 2), 5);
+});
+
+test("power raises a number to an exponent", () => {
+  assert.equal(power(2, 3), 8);
 });
