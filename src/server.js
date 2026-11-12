@@ -1,4 +1,5 @@
 import process from "node:process";
+import console from "node:console";
 import { createApp } from "./app.js";
 
 const port = Number(process.env.PORT ?? 3000);
