@@ -126,6 +126,27 @@ jobs:
             -p 127.0.0.1:3000:3000 \
             ci-cd-learning:pr
 
+      - name: Debug container
+        run: |
+          echo "=== All containers ==="
+          docker ps -a
+
+          echo "=== Container state ==="
+          docker inspect \
+            --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' \
+            ci-api
+
+          echo "=== Container command ==="
+          docker inspect \
+            --format='Cmd={{json .Config.Cmd}}' \
+            ci-api
+
+          echo "=== Container logs ==="
+          docker logs ci-api
+
+          echo "=== Published ports ==="
+          docker port ci-api
+
       - name: Smoke test HTTP API
         run: |
           echo "Checking /health..."
