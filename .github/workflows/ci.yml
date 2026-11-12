@@ -126,26 +126,30 @@ jobs:
             -p 127.0.0.1:3000:3000 \
             ci-cd-learning:pr
 
-      - name: Debug container
+      - name: Wait for API readiness
         run: |
-          echo "=== All containers ==="
-          docker ps -a
+          for attempt in {1..20}; do
+            if curl --fail --silent \
+              http://127.0.0.1:3000/health \
+              | grep -Fq '"status":"healthy"'; then
 
-          echo "=== Container state ==="
-          docker inspect \
-            --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' \
-            ci-api
+              echo "API is ready!"
+              exit 0
+            fi
 
-          echo "=== Container command ==="
-          docker inspect \
-            --format='Cmd={{json .Config.Cmd}}' \
-            ci-api
+            if [ "$(docker inspect -f '{{.State.Running}}' ci-api)" != "true" ]; then
+              echo "Container exited unexpectedly"
+              docker logs ci-api
+              exit 1
+            fi
 
-          echo "=== Container logs ==="
+            echo "Waiting for API... attempt $attempt"
+            sleep 1
+          done
+
+          echo "API failed to become ready"
           docker logs ci-api
-
-          echo "=== Published ports ==="
-          docker port ci-api
+          exit 1
 
       - name: Smoke test HTTP API
         run: |
