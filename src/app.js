@@ -34,6 +34,12 @@ export function createApp() {
       return;
     }
 
+    if (url.pathname === "/hello") {
+      res.writeHead(200);
+      res.end(JSON.stringify({ message: "Hello from CI/CD!" }));
+      return;
+    }
+
     res.writeHead(404);
     res.end(JSON.stringify({ error: "Not found" }));
   });
