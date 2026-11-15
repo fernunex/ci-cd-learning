@@ -36,7 +36,7 @@ export function createApp() {
 
     if (url.pathname === "/hello") {
       res.writeHead(200);
-      res.end(JSON.stringify({ message: "Hello from CI/CD!" }));
+      res.end(JSON.stringify({ message: "Release A" }));
       return;
     }
 
