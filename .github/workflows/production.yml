@@ -1,0 +1,218 @@
+name: Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_deploy_id:
+        description: "Successful Render staging deployment ID (dep-...)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  verify-release:
+    name: Verify staging release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    outputs:
+      image_ref: ${{ steps.candidate.outputs.image_ref }}
+
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      STAGING_SERVICE_ID: ${{ vars.RENDER_STAGING_SERVICE_ID }}
+      STAGING_URL: ${{ vars.RENDER_STAGING_URL }}
+      STAGING_DEPLOY_ID: ${{ inputs.staging_deploy_id }}
+
+    steps:
+      - name: Resolve verified image
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : "${RENDER_API_KEY:?Missing API key}"
+          : "${STAGING_SERVICE_ID:?Missing staging service ID}"
+          : "${STAGING_URL:?Missing staging URL}"
+
+          if [[ ! "$STAGING_DEPLOY_ID" =~ ^dep-[A-Za-z0-9_-]+$ ]]; then
+            echo "Invalid staging deployment ID"
+            exit 1
+          fi
+
+          response=$(curl --fail-with-body -sS \
+            "https://api.render.com/v1/services/$STAGING_SERVICE_ID/deploys/$STAGING_DEPLOY_ID" \
+            -H "Authorization: Bearer $RENDER_API_KEY")
+
+          status=$(jq -r '.status // empty' <<< "$response")
+          stage_ref=$(jq -r '.image.ref // empty' <<< "$response")
+          stage_sha=$(jq -r '.image.sha // empty' <<< "$response")
+
+          if [ "$status" != "live" ]; then
+            echo "Selected staging deployment is not live: $status"
+            exit 1
+          fi
+
+          image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          case "$stage_ref" in
+            "${image_repo}":*|"${image_repo}"@sha256:*) ;;
+            *)
+              echo "Unexpected staging image repository: $stage_ref"
+              exit 1
+              ;;
+          esac
+
+          if [[ ! "$stage_sha" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Render did not return a valid image digest"
+            exit 1
+          fi
+
+          image_ref="${image_repo}@${stage_sha}"
+
+          echo "Verified staging image: $image_ref"
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Check staging application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base="${STAGING_URL%/}"
+
+          curl -fsS --retry 8 --retry-all-errors \
+            --retry-delay 3 "$base/health" \
+            | jq -e '.status == "healthy"'
+
+          curl -fsS "$base/add?a=10&b=5" \
+            | jq -e '.result == 15'
+
+          echo "Staging verification passed!"
+
+  deploy-production:
+    name: Deploy verified image
+    needs: verify-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    environment:
+      name: production
+      url: ${{ vars.RENDER_PRODUCTION_URL }}
+
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SERVICE_ID: ${{ vars.RENDER_PRODUCTION_SERVICE_ID }}
+      STAGING_SERVICE_ID: ${{ vars.RENDER_STAGING_SERVICE_ID }}
+      PRODUCTION_URL: ${{ vars.RENDER_PRODUCTION_URL }}
+      IMAGE_REF: ${{ needs.verify-release.outputs.image_ref }}
+
+    steps:
+      - name: Trigger production deployment
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : "${RENDER_API_KEY:?Missing API key}"
+          : "${SERVICE_ID:?Missing production service ID}"
+          : "${PRODUCTION_URL:?Missing production URL}"
+          : "${IMAGE_REF:?Missing image reference}"
+
+          if [ "$SERVICE_ID" = "$STAGING_SERVICE_ID" ]; then
+            echo "Production and staging service IDs must differ"
+            exit 1
+          fi
+
+          echo "Promoting verified image: $IMAGE_REF"
+
+          payload=$(jq -n \
+            --arg image "$IMAGE_REF" \
+            '{imageUrl: $image}')
+
+          response=$(curl --fail-with-body -sS \
+            -X POST \
+            "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$payload")
+
+          deploy_id=$(jq -r '.id // empty' <<< "$response")
+
+          if [ -z "$deploy_id" ]; then
+            echo "No deployment ID returned; inspect Render"
+            exit 1
+          fi
+
+          echo "Production deployment ID: $deploy_id"
+          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for production deployment
+        shell: bash
+        env:
+          DEPLOY_ID: ${{ steps.deploy.outputs.deploy_id }}
+        run: |
+          set -euo pipefail
+
+          expected_digest="${IMAGE_REF##*@}"
+
+          for attempt in {1..90}; do
+            response=$(curl --fail-with-body -sS \
+              "https://api.render.com/v1/services/$SERVICE_ID/deploys/$DEPLOY_ID" \
+              -H "Authorization: Bearer $RENDER_API_KEY")
+
+            status=$(jq -r '.status' <<< "$response")
+            echo "Attempt $attempt: $status"
+
+            case "$status" in
+              live)
+                actual_digest=$(jq -r '.image.sha // empty' <<< "$response")
+
+                if [ "$actual_digest" != "$expected_digest" ]; then
+                  echo "Production image digest mismatch"
+                  exit 1
+                fi
+
+                echo "Expected image is live in production!"
+                exit 0
+                ;;
+
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "Production deployment failed: $status"
+                exit 1
+                ;;
+
+              created|queued|build_in_progress|update_in_progress|pre_deploy_in_progress)
+                sleep 10
+                ;;
+
+              *)
+                echo "Unknown deployment status: $status"
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "Production deployment timed out"
+          exit 1
+
+      - name: Verify production HTTP API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base="${PRODUCTION_URL%/}"
+
+          curl -fsS --retry 8 --retry-all-errors \
+            --retry-delay 3 "$base/health" \
+            | jq -e '.status == "healthy"'
+
+          curl -fsS "$base/add?a=10&b=5" \
+            | jq -e '.result == 15'
+
+          echo "Production release verified!"
